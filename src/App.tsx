@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import CodeMirror, { EditorView } from '@uiw/react-codemirror'
+import CodeMirror, { EditorView, Prec, keymap } from '@uiw/react-codemirror'
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown'
 import { languages } from '@codemirror/language-data'
 import { Preview } from './Preview'
+import { FORMAT_GROUPS } from './format'
+import { Resizer, clamp, useStoredNumber } from './layout'
 import {
   createInFolder,
   docFromHandle,
@@ -38,6 +40,21 @@ Esto es un editor de **Markdown** y **MDX**.
 - [ ] Escribir algo
 `
 
+const SIDEBAR_DEFAULT = 240
+const SIDEBAR_MIN = 150
+const SIDEBAR_MAX = 520
+const SPLIT_MIN = 0.15
+const SPLIT_MAX = 0.85
+
+// High precedence so these win over CodeMirror defaults (e.g. Mod-i).
+const formatKeymap = Prec.high(
+  keymap.of(
+    FORMAT_GROUPS.flat()
+      .filter((a) => a.key)
+      .map((a) => ({ key: a.key!, run: (view: EditorView) => (a.run(view), true) })),
+  ),
+)
+
 const prefersDark = () => window.matchMedia?.('(prefers-color-scheme: dark)').matches
 
 export default function App() {
@@ -47,6 +64,12 @@ export default function App() {
   const [view, setView] = useState<View>(() => (window.innerWidth < 800 ? 'edit' : 'split'))
   const [dark, setDark] = useState(prefersDark)
   const [status, setStatus] = useState<string | null>(null)
+  const [sidebarWidth, setSidebarWidth] = useStoredNumber('layout.sidebar', SIDEBAR_DEFAULT)
+  const [showSidebar, setShowSidebar] = useState(true)
+  const [split, setSplit] = useStoredNumber('layout.split', 0.5)
+  const [editorView, setEditorView] = useState<EditorView | null>(null)
+  const mainRef = useRef<HTMLDivElement>(null)
+  const panesRef = useRef<HTMLDivElement>(null)
 
   const active = docs.find((d) => d.id === activeId) ?? docs[0]
   const dirtyCount = docs.filter((d) => d.content !== d.saved).length
@@ -261,7 +284,7 @@ export default function App() {
   }, [addDocs, fail])
 
   const extensions = useMemo(
-    () => [markdown({ base: markdownLanguage, codeLanguages: languages }), EditorView.lineWrapping],
+    () => [markdown({ base: markdownLanguage, codeLanguages: languages }), EditorView.lineWrapping, formatKeymap],
     [],
   )
 
@@ -269,6 +292,7 @@ export default function App() {
     <div className="app">
       <header className="toolbar">
         <div className="toolbar-group">
+          <button onClick={() => setShowSidebar((s) => !s)} title={showSidebar ? 'Ocultar panel lateral' : 'Mostrar panel lateral'}>☰</button>
           <button onClick={handleNew} title="Nuevo archivo">＋ Nuevo</button>
           <button onClick={handleOpenFiles} title="Abrir archivo (Ctrl+O)">Abrir archivo</button>
           {supportsFsAccess && <button onClick={handleOpenFolder}>Abrir carpeta</button>}
@@ -296,56 +320,87 @@ export default function App() {
         </div>
       )}
 
-      <div className="main">
-        <aside className="sidebar">
-          <section>
-            <h3>Abiertos</h3>
-            <ul>
-              {docs.map((d) => (
-                <li key={d.id} className={d.id === active.id ? 'active' : ''}>
-                  <button className="file" onClick={() => setActiveId(d.id)} title={d.path}>
-                    {d.content !== d.saved && <span className="dot">●</span>}
-                    {d.name}
-                    <span className="badge">{d.kind}</span>
-                  </button>
-                  <button className="close" onClick={() => closeDoc(d)} title="Cerrar">×</button>
-                </li>
-              ))}
-            </ul>
-          </section>
-          {folder && (
+      <div className="main" ref={mainRef}>
+        {showSidebar && (
+          <aside className="sidebar" style={{ width: sidebarWidth }}>
             <section>
-              <h3>
-                <span title={folder.name}>📁 {folder.name}</span>
-                <button className="icon" onClick={refreshFolder} title="Actualizar">↻</button>
-                <button className="icon" onClick={() => setFolder(null)} title="Cerrar carpeta">×</button>
-              </h3>
+              <h3>Abiertos</h3>
               <ul>
-                {folder.entries.length === 0 && <li className="empty">Sin archivos .md / .mdx</li>}
-                {folder.entries.map((e) => {
-                  const depth = e.path.split('/').length - 1
-                  const name = e.path.split('/').pop()
-                  const dir = e.path.split('/').slice(0, -1).join('/')
-                  const open = docs.find((d) => d.handle && d.path === e.path)
-                  return (
-                    <li key={e.path} className={open?.id === active.id ? 'active' : ''}>
-                      <button className="file" style={{ paddingLeft: 8 + depth * 10 }} onClick={() => openFromFolder(e.path, e.handle)} title={e.path}>
-                        {open && open.content !== open.saved && <span className="dot">●</span>}
-                        {name}
-                        {dir && <span className="dir">{dir}</span>}
-                      </button>
-                    </li>
-                  )
-                })}
+                {docs.map((d) => (
+                  <li key={d.id} className={d.id === active.id ? 'active' : ''}>
+                    <button className="file" onClick={() => setActiveId(d.id)} title={d.path}>
+                      {d.content !== d.saved && <span className="dot">●</span>}
+                      {d.name}
+                      <span className="badge">{d.kind}</span>
+                    </button>
+                    <button className="close" onClick={() => closeDoc(d)} title="Cerrar">×</button>
+                  </li>
+                ))}
               </ul>
             </section>
-          )}
-        </aside>
+            {folder && (
+              <section>
+                <h3>
+                  <span title={folder.name}>📁 {folder.name}</span>
+                  <button className="icon" onClick={refreshFolder} title="Actualizar">↻</button>
+                  <button className="icon" onClick={() => setFolder(null)} title="Cerrar carpeta">×</button>
+                </h3>
+                <ul>
+                  {folder.entries.length === 0 && <li className="empty">Sin archivos .md / .mdx</li>}
+                  {folder.entries.map((e) => {
+                    const depth = e.path.split('/').length - 1
+                    const name = e.path.split('/').pop()
+                    const dir = e.path.split('/').slice(0, -1).join('/')
+                    const open = docs.find((d) => d.handle && d.path === e.path)
+                    return (
+                      <li key={e.path} className={open?.id === active.id ? 'active' : ''}>
+                        <button className="file" style={{ paddingLeft: 8 + depth * 10 }} onClick={() => openFromFolder(e.path, e.handle)} title={e.path}>
+                          {open && open.content !== open.saved && <span className="dot">●</span>}
+                          {name}
+                          {dir && <span className="dir">{dir}</span>}
+                        </button>
+                      </li>
+                    )
+                  })}
+                </ul>
+              </section>
+            )}
+          </aside>
+        )}
+        {showSidebar && (
+          <Resizer
+            label="Ancho del panel lateral"
+            onDrag={(x) => setSidebarWidth(clamp(x - (mainRef.current?.getBoundingClientRect().left ?? 0), SIDEBAR_MIN, SIDEBAR_MAX))}
+            onStep={(d) => setSidebarWidth(clamp(sidebarWidth + d * 20, SIDEBAR_MIN, SIDEBAR_MAX))}
+            onReset={() => setSidebarWidth(SIDEBAR_DEFAULT)}
+          />
+        )}
 
-        <div className={`panes view-${view}`}>
+        <div className={`panes view-${view}`} ref={panesRef}>
           {view !== 'preview' && (
-            <div className="pane editor">
+            <div className="pane editor" style={view === 'split' ? { flexBasis: `${split * 100}%` } : undefined}>
+              <div className="format-bar" role="toolbar" aria-label="Formato">
+                {FORMAT_GROUPS.map((group, i) => (
+                  <div className="format-group" key={i}>
+                    {group.map((a) => (
+                      <button
+                        key={a.id}
+                        className={`fmt fmt-${a.id}`}
+                        title={a.title}
+                        aria-label={a.title}
+                        // Keep focus (and the selection) in the editor.
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => editorView && a.run(editorView)}
+                      >
+                        {a.label}
+                      </button>
+                    ))}
+                  </div>
+                ))}
+              </div>
               <CodeMirror
+                className="editor-cm"
+                onCreateEditor={setEditorView}
                 key={active.id}
                 value={active.content}
                 height="100%"
@@ -357,8 +412,19 @@ export default function App() {
               />
             </div>
           )}
+          {view === 'split' && (
+            <Resizer
+              label="Ancho del editor"
+              onDrag={(x) => {
+                const rect = panesRef.current?.getBoundingClientRect()
+                if (rect) setSplit(clamp((x - rect.left) / rect.width, SPLIT_MIN, SPLIT_MAX))
+              }}
+              onStep={(d) => setSplit(clamp(split + d * 0.05, SPLIT_MIN, SPLIT_MAX))}
+              onReset={() => setSplit(0.5)}
+            />
+          )}
           {view !== 'edit' && (
-            <div className="pane">
+            <div className="pane preview-pane">
               <Preview source={active.content} kind={active.kind} />
             </div>
           )}
