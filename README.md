@@ -12,6 +12,12 @@ npm run build    # genera una web estática en dist/
 
 `dist/` es estático: se puede servir en cualquier hosting (GitHub Pages, Netlify, Vercel…) o probar con `npm run preview`.
 
+## Instalar como app (Chrome / Edge)
+
+Es una PWA: abre la web servida por `https://` (o `http://localhost`) y pulsa el icono de **Instalar** en la barra de direcciones (o menú ⋮ → *Transmitir, guardar y compartir* → *Instalar página como app*). Se abre en su propia ventana y funciona sin conexión.
+
+Una vez instalada se registra para `.md`, `.mdx` y `.markdown`: en el explorador de archivos, *Abrir con → Markdown Editor* abre el archivo listo para editar y guardar.
+
 ## Funciones
 
 - **Abrir archivo** (`Ctrl/Cmd+O`) o **Abrir carpeta**: lista todos los `.md`, `.mdx` y `.markdown` (ignora `node_modules`, `.git`, carpetas ocultas…).
