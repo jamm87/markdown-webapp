@@ -34,7 +34,9 @@ Una vez instalada se registra para `.md`, `.mdx` y `.markdown`: en el explorador
 - Arrastrar y soltar archivos o carpetas sobre la ventana.
 - Barra de formato: títulos, negrita (`Ctrl+B`), cursiva (`Ctrl+I`), tachado, código (`Ctrl+E`), listas, tareas, citas, enlaces (`Ctrl+K`), imágenes, bloques de código, tablas y separadores. Los botones de estilo y de línea se activan y desactivan.
 - Columnas redimensionables: arrastra el separador del panel lateral o entre editor y vista previa (doble clic para restablecer; también con las flechas del teclado). El ancho se recuerda. `☰` oculta el panel lateral.
-- Vista editor / dividida / previsualización, tema claro/oscuro, aviso de cambios sin guardar, recargar desde disco.
+- Cuatro vistas: **Editor MD** (código Markdown), **Dividido** (código + vista previa), **Editor Texto** (edición visual, como un procesador de textos) y **Lectura**.
+- **Editor Texto** solo permite lo que Markdown puede guardar (CommonMark + GFM): títulos, negrita, cursiva, tachado, código, listas, tareas (clic en la casilla para marcarla), citas, enlaces, imágenes, tablas y separadores. También entiende los atajos de Markdown al escribir (`## `, `- `, `1. `, `> `, `**texto**`…). Conserva el frontmatter y el estilo del archivo (`-`/`*` en listas, `**`/`__` en negrita) y no modifica el archivo si solo lo abres. No está disponible para `.mdx`.
+- Tema claro/oscuro, aviso de cambios sin guardar, recargar desde disco.
 - Markdown con GFM (tablas, tareas, tachado) y frontmatter (se oculta en la vista previa).
 - MDX: expresiones `{...}` y JSX. Los `import` se ignoran en la vista previa (no se pueden resolver en el navegador) y los componentes desconocidos se muestran como un recuadro con su nombre. Incluye `<Callout type="info|warning|danger">`, `<Note>` y `<Warning>`.
 

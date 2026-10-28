@@ -3,6 +3,7 @@ import CodeMirror, { EditorView, Prec, keymap } from '@uiw/react-codemirror'
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown'
 import { languages } from '@codemirror/language-data'
 import { Preview } from './Preview'
+import { RichEditor, type RichApi } from './RichEditor'
 import { FORMAT_GROUPS } from './format'
 import { Resizer, clamp, useStoredNumber } from './layout'
 import {
@@ -20,7 +21,9 @@ import {
   type Folder,
 } from './fs'
 
-type View = 'edit' | 'split' | 'preview'
+type View = 'edit' | 'split' | 'rich' | 'preview'
+
+const VIEW_LABELS: Record<View, string> = { edit: 'Editor MD', split: 'Dividido', rich: 'Editor Texto', preview: 'Lectura' }
 
 const WELCOME = `# Hola 👋
 
@@ -68,6 +71,8 @@ export default function App() {
   const [showSidebar, setShowSidebar] = useState(true)
   const [split, setSplit] = useStoredNumber('layout.split', 0.5)
   const [editorView, setEditorView] = useState<EditorView | null>(null)
+  const [richApi, setRichApi] = useState<RichApi | null>(null)
+  const [richActive, setRichActive] = useState<Set<string>>(() => new Set())
   const mainRef = useRef<HTMLDivElement>(null)
   const panesRef = useRef<HTMLDivElement>(null)
 
@@ -288,6 +293,38 @@ export default function App() {
     [],
   )
 
+  // JSX in MDX can't be edited visually, so MDX files fall back to the source editor.
+  const shownView: View = view === 'rich' && active.kind === 'mdx' ? 'edit' : view
+
+  const runFormat = (id: string) => {
+    if (shownView === 'rich') return richApi?.run(id)
+    const action = FORMAT_GROUPS.flat().find((a) => a.id === id)
+    if (action && editorView) action.run(editorView)
+  }
+
+  const formatBar = (
+    <div className="format-bar" role="toolbar" aria-label="Formato">
+      {FORMAT_GROUPS.map((group, i) => (
+        <div className="format-group" key={i}>
+          {group.map((a) => (
+            <button
+              key={a.id}
+              className={`fmt fmt-${a.id}${shownView === 'rich' && richActive.has(a.id) ? ' on' : ''}`}
+              title={a.title}
+              aria-label={a.title}
+              aria-pressed={shownView === 'rich' ? richActive.has(a.id) : undefined}
+              // Keep focus (and the selection) in the editor.
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => runFormat(a.id)}
+            >
+              {a.label}
+            </button>
+          ))}
+        </div>
+      ))}
+    </div>
+  )
+
   return (
     <div className="app">
       <header className="toolbar">
@@ -304,9 +341,15 @@ export default function App() {
         </div>
         <div className="toolbar-group">
           <div className="segmented">
-            {(['edit', 'split', 'preview'] as const).map((v) => (
-              <button key={v} className={view === v ? 'on' : ''} onClick={() => setView(v)}>
-                {{ edit: 'Editor', split: 'Dividido', preview: 'Vista' }[v]}
+            {(Object.keys(VIEW_LABELS) as View[]).map((v) => (
+              <button
+                key={v}
+                className={shownView === v ? 'on' : ''}
+                onClick={() => setView(v)}
+                disabled={v === 'rich' && active.kind === 'mdx'}
+                title={v === 'rich' && active.kind === 'mdx' ? 'El editor de texto no está disponible para archivos MDX' : undefined}
+              >
+                {VIEW_LABELS[v]}
               </button>
             ))}
           </div>
@@ -376,28 +419,10 @@ export default function App() {
           />
         )}
 
-        <div className={`panes view-${view}`} ref={panesRef}>
-          {view !== 'preview' && (
-            <div className="pane editor" style={view === 'split' ? { flexBasis: `${split * 100}%` } : undefined}>
-              <div className="format-bar" role="toolbar" aria-label="Formato">
-                {FORMAT_GROUPS.map((group, i) => (
-                  <div className="format-group" key={i}>
-                    {group.map((a) => (
-                      <button
-                        key={a.id}
-                        className={`fmt fmt-${a.id}`}
-                        title={a.title}
-                        aria-label={a.title}
-                        // Keep focus (and the selection) in the editor.
-                        onMouseDown={(e) => e.preventDefault()}
-                        onClick={() => editorView && a.run(editorView)}
-                      >
-                        {a.label}
-                      </button>
-                    ))}
-                  </div>
-                ))}
-              </div>
+        <div className={`panes view-${shownView}`} ref={panesRef}>
+          {(shownView === 'edit' || shownView === 'split') && (
+            <div className="pane editor" style={shownView === 'split' ? { flexBasis: `${split * 100}%` } : undefined}>
+              {formatBar}
               <CodeMirror
                 className="editor-cm"
                 onCreateEditor={setEditorView}
@@ -412,7 +437,21 @@ export default function App() {
               />
             </div>
           )}
-          {view === 'split' && (
+          {shownView === 'rich' && (
+            <div className="pane editor rich">
+              {formatBar}
+              <div className="rich-scroll">
+                <RichEditor
+                  key={active.id}
+                  value={active.content}
+                  onChange={(value) => updateDoc(active.id, { content: value })}
+                  onReady={setRichApi}
+                  onActiveChange={setRichActive}
+                />
+              </div>
+            </div>
+          )}
+          {shownView === 'split' && (
             <Resizer
               label="Ancho del editor"
               onDrag={(x) => {
@@ -423,7 +462,7 @@ export default function App() {
               onReset={() => setSplit(0.5)}
             />
           )}
-          {view !== 'edit' && (
+          {(shownView === 'split' || shownView === 'preview') && (
             <div className="pane preview-pane">
               <Preview source={active.content} kind={active.kind} />
             </div>
