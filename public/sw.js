@@ -1,4 +1,4 @@
-// Minimal offline support: serve from cache, refresh in the background.
+// Minimal offline support: network-first for pages, cache-first for assets.
 const CACHE = 'markdown-editor-v1'
 
 self.addEventListener('install', () => self.skipWaiting())
@@ -22,6 +22,9 @@ self.addEventListener('fetch', (e) => {
           return res
         })
         .catch(() => cached)
+      // Pages go to the network first so a new deploy shows up on the next
+      // launch; hashed assets never change, so the cache is fine for them.
+      if (req.mode === 'navigate') return network.then((res) => res ?? cached)
       return cached ?? network
     }),
   )
