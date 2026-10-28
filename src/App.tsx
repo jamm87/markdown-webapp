@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import CodeMirror, { EditorView } from '@uiw/react-codemirror'
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown'
 import { languages } from '@codemirror/language-data'
@@ -209,6 +209,21 @@ export default function App() {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [active, handleSave, handleSaveAs, handleOpenFiles])
+
+  // Files opened from the OS ("Open with…") when installed as an app.
+  const addDocsRef = useRef(addDocs)
+  addDocsRef.current = addDocs
+  useEffect(() => {
+    const launchQueue = (window as any).launchQueue
+    launchQueue?.setConsumer(async (params: { files: FileSystemFileHandle[] }) => {
+      if (!params.files?.length) return
+      try {
+        await addDocsRef.current(await Promise.all(params.files.map((h) => docFromHandle(h))))
+      } catch (err) {
+        fail(err)
+      }
+    })
+  }, [fail])
 
   // Drag & drop files onto the window.
   useEffect(() => {
