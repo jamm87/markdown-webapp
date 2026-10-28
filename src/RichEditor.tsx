@@ -5,8 +5,8 @@ import { Editor, defaultValueCtx, editorViewCtx, remarkStringifyOptionsCtx, root
 import {
   commonmark,
   createCodeBlockCommand,
+  imageSchema,
   insertHrCommand,
-  insertImageCommand,
   liftListItemCommand,
   toggleEmphasisCommand,
   toggleInlineCodeCommand,
@@ -21,10 +21,11 @@ import {
 import { gfm, insertTableCommand, toggleStrikethroughCommand } from '@milkdown/kit/preset/gfm'
 import { history } from '@milkdown/kit/plugin/history'
 import { clipboard } from '@milkdown/kit/plugin/clipboard'
-import { $prose, callCommand, replaceAll } from '@milkdown/kit/utils'
+import { $prose, $view, callCommand, replaceAll } from '@milkdown/kit/utils'
 import { lift } from '@milkdown/kit/prose/commands'
-import { Plugin, type EditorState } from '@milkdown/kit/prose/state'
+import { Plugin, TextSelection, type EditorState } from '@milkdown/kit/prose/state'
 import type { EditorView } from '@milkdown/kit/prose/view'
+import { imageFiles, type ImageResolver } from './images'
 import '@milkdown/kit/prose/view/style/prosemirror.css'
 import '@milkdown/kit/prose/tables/style/tables.css'
 
@@ -114,14 +115,9 @@ function insertLink(editor: Editor) {
   })
 }
 
-function insertImage(editor: Editor) {
-  const src = prompt('Dirección de la imagen:', 'https://')?.trim()
-  if (!src) return
-  editor.action(callCommand(insertImageCommand.key, { src, alt: '' }))
-}
-
 export interface RichApi {
   run: (id: string) => void
+  insertImage: (src: string, alt: string) => void
 }
 
 export function RichEditor({
@@ -129,19 +125,26 @@ export function RichEditor({
   onChange,
   onReady,
   onActiveChange,
+  resolveImage,
+  onImages,
 }: {
   value: string
   onChange: (markdown: string) => void
   onReady: (api: RichApi | null) => void
   onActiveChange: (active: Set<string>) => void
+  resolveImage: ImageResolver
+  /** Image files pasted or dropped into the editor (the cursor is already where they go). */
+  onImages: (files: File[]) => void
 }) {
   const rootRef = useRef<HTMLDivElement>(null)
   const editorRef = useRef<Editor | null>(null)
   const resetRef = useRef<((next: string) => void) | null>(null)
   // Last markdown we emitted or loaded, to tell our own updates from external ones.
   const lastValue = useRef(value)
-  const callbacks = useRef({ onChange, onActiveChange })
-  callbacks.current = { onChange, onActiveChange }
+  const callbacks = useRef({ onChange, onActiveChange, resolveImage, onImages })
+  callbacks.current = { onChange, onActiveChange, resolveImage, onImages }
+  // Image node views, re-rendered when the resolver changes (e.g. the folder becomes known).
+  const imageViews = useRef(new Set<() => void>())
 
   useEffect(() => {
     let destroyed = false
@@ -159,6 +162,22 @@ export function RichEditor({
     const sync = $prose(
       (ctx) =>
         new Plugin({
+          props: {
+            handlePaste: (_view, event) => {
+              const files = imageFiles(event.clipboardData)
+              if (!files.length) return false
+              callbacks.current.onImages(files)
+              return true
+            },
+            handleDrop: (view, event) => {
+              const files = imageFiles(event.dataTransfer)
+              if (!files.length) return false
+              const pos = view.posAtCoords({ left: event.clientX, top: event.clientY })
+              if (pos) view.dispatch(view.state.tr.setSelection(TextSelection.near(view.state.doc.resolve(pos.pos))))
+              callbacks.current.onImages(files)
+              return true
+            },
+          },
           view: () => ({
             update: (view, prev) => {
               callbacks.current.onActiveChange(activeFormats(view.state))
@@ -172,6 +191,37 @@ export function RichEditor({
           }),
         }),
     )
+
+    // Relative image paths point into the doc's folder: load them through the resolver.
+    const imageView = $view(imageSchema.node, () => (initial) => {
+      const dom = document.createElement('img')
+      let node = initial
+      const render = () => {
+        const src: string = node.attrs.src
+        dom.alt = node.attrs.alt ?? ''
+        dom.title = node.attrs.title ?? ''
+        dom.dataset.src = src
+        callbacks.current.resolveImage(src).then((url) => {
+          if (dom.dataset.src !== src) return
+          dom.classList.toggle('image-missing', !url)
+          if (url) dom.src = url
+          else dom.removeAttribute('src')
+        })
+      }
+      render()
+      imageViews.current.add(render)
+      return {
+        dom,
+        update: (next) => {
+          if (next.type !== node.type) return false
+          node = next
+          render()
+          return true
+        },
+        ignoreMutation: () => true,
+        destroy: () => imageViews.current.delete(render),
+      }
+    })
 
     const editor = Editor.make()
       .config((ctx) => {
@@ -188,8 +238,10 @@ export function RichEditor({
       .use(commonmark)
       .use(gfm)
       .use(history)
-      .use(clipboard)
+      // Before the clipboard plugin, so pasted image files win over pasted HTML.
       .use(sync)
+      .use(clipboard)
+      .use(imageView)
 
     const serialize = () =>
       editor.action((ctx) => cleanMarkdown(ctx.get(serializerCtx)(ctx.get(editorViewCtx).state.doc)))
@@ -215,7 +267,6 @@ export function RichEditor({
           case 'task': return toggleTask(editor)
           case 'quote': return active.has('quote') ? void lift(view.state, view.dispatch) : call(wrapInBlockquoteCommand.key)
           case 'link': return insertLink(editor)
-          case 'image': return insertImage(editor)
           case 'codeblock': return active.has('codeblock') ? call(turnIntoTextCommand.key) : call(createCodeBlockCommand.key)
           case 'table': return call(insertTableCommand.key, { row: 3, col: 2 })
           case 'hr': return call(insertHrCommand.key)
@@ -225,6 +276,23 @@ export function RichEditor({
         run: (id) => {
           run(id)
           editor.action((ctx) => ctx.get(editorViewCtx).focus())
+        },
+        insertImage: (src, alt) => {
+          editor.action((ctx) => {
+            const view = ctx.get(editorViewCtx)
+            const { state } = view
+            const { $from } = state.selection
+            const image = state.schema.nodes.image.create({ src, alt })
+            // In an empty paragraph insert in place; otherwise add a new paragraph after this block.
+            if (!$from.parent.isTextblock || $from.parent.content.size === 0) {
+              view.dispatch(state.tr.replaceSelectionWith(image).scrollIntoView())
+            } else {
+              const pos = $from.after($from.depth)
+              const tr = state.tr.insert(pos, state.schema.nodes.paragraph.create(null, image))
+              view.dispatch(tr.setSelection(TextSelection.near(tr.doc.resolve(pos + 1 + image.nodeSize), -1)).scrollIntoView())
+            }
+            view.focus()
+          })
         },
       })
       // Don't steal a click that landed while the editor was starting up.
@@ -254,6 +322,10 @@ export function RichEditor({
     // The editor is created once per mount; the parent remounts it per document.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  useEffect(() => {
+    imageViews.current.forEach((render) => render())
+  }, [resolveImage])
 
   // Content changed outside this editor (e.g. reloaded from disk).
   useEffect(() => {

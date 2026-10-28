@@ -136,7 +136,7 @@ export const FORMAT_GROUPS: FormatAction[][] = [
   ],
   [
     { id: 'link', label: '🔗', title: 'Enlace (Ctrl+K)', run: (v) => insertLink(v), key: 'Mod-k' },
-    { id: 'image', label: '🖼', title: 'Imagen', run: (v) => insertLink(v, true) },
+    { id: 'image', label: '🖼', title: 'Imagen (también puedes pegar o arrastrar capturas)', run: (v) => insertLink(v, true) },
     { id: 'codeblock', label: '{ }', title: 'Bloque de código', run: (v) => insertBlock(v, '```\ncódigo\n```', 'código') },
     { id: 'table', label: '▦', title: 'Tabla', run: (v) => insertBlock(v, TABLE, 'Columna 1') },
     { id: 'hr', label: '—', title: 'Separador', run: (v) => insertBlock(v, '---') },

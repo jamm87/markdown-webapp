@@ -6,6 +6,7 @@ import { Preview } from './Preview'
 import { RichEditor, type RichApi } from './RichEditor'
 import { FORMAT_GROUPS } from './format'
 import { Resizer, clamp, useStoredNumber } from './layout'
+import { createResolver, imageFiles, locate, markdownImage, saveImage, toDataUrl, type DocLocation } from './images'
 import {
   createInFolder,
   docFromHandle,
@@ -64,6 +65,7 @@ export default function App() {
   const [docs, setDocs] = useState<Doc[]>(() => [makeDoc('bienvenida.md', WELCOME)])
   const [activeId, setActiveId] = useState(() => docs[0].id)
   const [folder, setFolder] = useState<Folder | null>(null)
+  const [location, setLocation] = useState<DocLocation | null>(null)
   const [view, setView] = useState<View>(() => (window.innerWidth < 800 ? 'edit' : 'split'))
   const [dark, setDark] = useState(prefersDark)
   const [status, setStatus] = useState<string | null>(null)
@@ -253,10 +255,90 @@ export default function App() {
     })
   }, [fail])
 
+  // Where the active doc lives inside the open folder (needed for its images).
+  useEffect(() => {
+    let live = true
+    const handle = active.handle
+    if (!folder || !handle) setLocation(null)
+    else locate(folder.handle, handle).then((loc) => live && setLocation(loc), () => live && setLocation(null))
+    return () => {
+      live = false
+    }
+  }, [folder, active.id, active.handle])
+
+  const resolver = useMemo(() => createResolver(location), [location])
+  useEffect(() => () => resolver.dispose(), [resolver])
+
+  /** Saves pasted/dropped/picked images next to the doc and inserts links at the cursor. */
+  const addImages = async (files: File[]) => {
+    if (!files.length) return
+    const insert = (alt: string, src: string) => {
+      if (shownView === 'rich') return richApi?.insertImage(src, alt)
+      if (!editorView) return
+      // Put each image in its own paragraph: a blank line before it, a newline after.
+      const { state } = editorView
+      const { from, to } = state.selection.main
+      const before = state.sliceDoc(0, from)
+      const lead = !before || before.endsWith('\n\n') ? '' : before.endsWith('\n') ? '\n' : '\n\n'
+      const text = `${lead}${markdownImage(alt, src)}\n`
+      editorView.dispatch({ changes: { from, to, insert: text }, selection: { anchor: from + text.length }, scrollIntoView: true })
+      editorView.focus()
+    }
+    try {
+      if (!supportsFsAccess) {
+        // No way to write files: embed the image in the document instead.
+        for (const file of files) insert('imagen', await toDataUrl(file))
+        return
+      }
+      if (!active.handle) return flash('Guarda el archivo antes de añadir imágenes')
+      let loc = location
+      if (!loc) {
+        if (!confirm(`Para guardar la imagen junto a «${active.name}», elige la carpeta donde está ese archivo.`)) return
+        let dir: FileSystemDirectoryHandle
+        try {
+          dir = await window.showDirectoryPicker({ mode: 'readwrite', startIn: active.handle })
+        } catch (err) {
+          if (err instanceof DOMException && err.name === 'AbortError') return
+          throw err
+        }
+        loc = await locate(dir, active.handle)
+        if (!loc) return flash(`Esa carpeta no contiene «${active.name}»`)
+        setFolder({ name: dir.name, handle: dir, entries: await scanFolder(dir) })
+        setLocation(loc)
+      }
+      if ((await loc.root.queryPermission({ mode: 'readwrite' })) !== 'granted' &&
+          (await loc.root.requestPermission({ mode: 'readwrite' })) !== 'granted') {
+        return flash('Permiso de escritura denegado')
+      }
+      const saved: string[] = []
+      for (const file of files) {
+        const { path, alt } = await saveImage(loc, file)
+        insert(alt, path)
+        saved.push(path)
+      }
+      flash(saved.length === 1 ? `Imagen guardada en ${saved[0]}` : `${saved.length} imágenes guardadas en ${saved[0].split('/')[0]}/`)
+    } catch (err) {
+      fail(err)
+    }
+  }
+  const addImagesRef = useRef(addImages)
+  addImagesRef.current = addImages
+
+  const pickImages = () => {
+    const input = document.createElement('input')
+    input.type = 'file'
+    input.accept = 'image/*'
+    input.multiple = true
+    input.onchange = () => addImagesRef.current(Array.from(input.files ?? []))
+    input.click()
+  }
+
   // Drag & drop files onto the window.
   useEffect(() => {
     const onDragOver = (e: DragEvent) => e.preventDefault()
     const onDrop = async (e: DragEvent) => {
+      // The editors handle images dropped on them themselves.
+      if (e.defaultPrevented) return
       e.preventDefault()
       const items = Array.from(e.dataTransfer?.items ?? []).filter((i) => i.kind === 'file')
       // Grab handles synchronously: the DataTransfer is cleared after the first await.
@@ -266,6 +348,7 @@ export default function App() {
           : Promise.resolve(null),
       )
       const files = items.map((i) => i.getAsFile())
+      const images = imageFiles(e.dataTransfer)
       const out: Doc[] = []
       for (let i = 0; i < items.length; i++) {
         const handle = await pending[i]
@@ -279,6 +362,7 @@ export default function App() {
         }
       }
       addDocs(out).catch(fail)
+      if (!out.length && images.length) addImagesRef.current(images)
     }
     window.addEventListener('dragover', onDragOver)
     window.addEventListener('drop', onDrop)
@@ -289,7 +373,29 @@ export default function App() {
   }, [addDocs, fail])
 
   const extensions = useMemo(
-    () => [markdown({ base: markdownLanguage, codeLanguages: languages }), EditorView.lineWrapping, formatKeymap],
+    () => [
+      markdown({ base: markdownLanguage, codeLanguages: languages }),
+      EditorView.lineWrapping,
+      formatKeymap,
+      EditorView.domEventHandlers({
+        paste: (e) => {
+          const files = imageFiles(e.clipboardData)
+          if (!files.length) return false
+          e.preventDefault()
+          addImagesRef.current(files)
+          return true
+        },
+        drop: (e, view) => {
+          const files = imageFiles(e.dataTransfer)
+          if (!files.length) return false
+          e.preventDefault()
+          const pos = view.posAtCoords({ x: e.clientX, y: e.clientY })
+          if (pos != null) view.dispatch({ selection: { anchor: pos } })
+          addImagesRef.current(files)
+          return true
+        },
+      }),
+    ],
     [],
   )
 
@@ -297,6 +403,7 @@ export default function App() {
   const shownView: View = view === 'rich' && active.kind === 'mdx' ? 'edit' : view
 
   const runFormat = (id: string) => {
+    if (id === 'image') return pickImages()
     if (shownView === 'rich') return richApi?.run(id)
     const action = FORMAT_GROUPS.flat().find((a) => a.id === id)
     if (action && editorView) action.run(editorView)
@@ -447,6 +554,8 @@ export default function App() {
                   onChange={(value) => updateDoc(active.id, { content: value })}
                   onReady={setRichApi}
                   onActiveChange={setRichActive}
+                  resolveImage={resolver.resolve}
+                  onImages={(files) => addImagesRef.current(files)}
                 />
               </div>
             </div>
@@ -464,7 +573,7 @@ export default function App() {
           )}
           {(shownView === 'split' || shownView === 'preview') && (
             <div className="pane preview-pane">
-              <Preview source={active.content} kind={active.kind} />
+              <Preview source={active.content} kind={active.kind} resolveImage={resolver.resolve} />
             </div>
           )}
         </div>

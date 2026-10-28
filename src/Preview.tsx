@@ -1,9 +1,10 @@
-import { Component, useEffect, useState, type ComponentType, type ReactNode } from 'react'
+import { Component, useEffect, useMemo, useState, type ComponentType, type ReactNode } from 'react'
 import { evaluate } from '@mdx-js/mdx'
 import * as runtime from 'react/jsx-runtime'
 import remarkGfm from 'remark-gfm'
 import remarkFrontmatter from 'remark-frontmatter'
 import type { Kind } from './fs'
+import type { ImageResolver } from './images'
 
 type MDXContent = ComponentType<{ components?: Record<string, unknown> }>
 
@@ -14,6 +15,21 @@ const builtins: Record<string, ComponentType<any>> = {
   ),
   Note: ({ children }: { children?: ReactNode }) => <div className="callout callout-info">{children}</div>,
   Warning: ({ children }: { children?: ReactNode }) => <div className="callout callout-warning">{children}</div>,
+}
+
+/** <img> that loads relative paths from the document's folder. */
+function LocalImage({ src, alt, resolve, ...rest }: { src?: string; alt?: string; resolve?: ImageResolver } & Record<string, unknown>) {
+  const [url, setUrl] = useState<string | null | undefined>(undefined)
+  useEffect(() => {
+    let live = true
+    if (!src || !resolve) setUrl(src ?? null)
+    else resolve(src).then((u) => live && setUrl(u))
+    return () => {
+      live = false
+    }
+  }, [src, resolve])
+  if (url === null) return <span className="image-missing" title={src}>🖼 {alt || src}</span>
+  return <img {...rest} src={url} alt={alt ?? ''} />
 }
 
 function missing(name: string) {
@@ -40,9 +56,11 @@ function prepare(source: string, kind: Kind) {
   return { source: stripped, components }
 }
 
-export function Preview({ source, kind }: { source: string; kind: Kind }) {
+export function Preview({ source, kind, resolveImage }: { source: string; kind: Kind; resolveImage?: ImageResolver }) {
   const [result, setResult] = useState<{ Content: MDXContent; components: Record<string, unknown> } | null>(null)
   const [error, setError] = useState<string | null>(null)
+  // Stable component so images don't remount (and flicker) on every keystroke.
+  const Img = useMemo(() => (props: Record<string, unknown>) => <LocalImage {...props} resolve={resolveImage} />, [resolveImage])
 
   useEffect(() => {
     let cancelled = false
@@ -72,18 +90,22 @@ export function Preview({ source, kind }: { source: string; kind: Kind }) {
     <div className="preview markdown-body">
       {error && <pre className="preview-error">{error}</pre>}
       {result && (
-        <ErrorBoundary key={source}>
-          <result.Content components={result.components} />
+        <ErrorBoundary resetKey={source}>
+          <result.Content components={{ ...result.components, img: Img }} />
         </ErrorBoundary>
       )}
     </div>
   )
 }
 
-class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
+/** Shows render errors; clears them when the source changes (without remounting on every edit). */
+class ErrorBoundary extends Component<{ children: ReactNode; resetKey: string }, { error: Error | null }> {
   state = { error: null as Error | null }
   static getDerivedStateFromError(error: Error) {
     return { error }
+  }
+  componentDidUpdate(prev: { resetKey: string }) {
+    if (this.state.error && prev.resetKey !== this.props.resetKey) this.setState({ error: null })
   }
   render() {
     if (this.state.error) return <pre className="preview-error">{this.state.error.message}</pre>

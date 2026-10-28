@@ -193,3 +193,11 @@ button.primary:hover:not(:disabled) { background: var(--accent); filter: brightn
 .rich-editor img { max-width: 100%; }
 @media (max-width: 800px) { .rich-editor { padding: 16px; } }
 .rich-editor li > p { margin: 0.15em 0; }
+
+/* Local images that couldn't be loaded (no folder access or missing file) */
+.image-missing {
+  display: inline-block; padding: 4px 8px; border: 1px dashed var(--muted); border-radius: 4px;
+  color: var(--muted); font-size: 13px;
+}
+img.image-missing { min-width: 120px; min-height: 40px; }
+.rich-editor img { cursor: default; border-radius: 4px; }
